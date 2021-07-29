@@ -1,0 +1,13 @@
+# This file describes a Fastly Compute@Edge package. To learn more visit:
+# https://developer.fastly.com/reference/fastly-toml/
+
+authors = ["Michael Walker (barrucadu) <mike@barrucadu.co.uk>"]
+description = "Demo Compute@Edge project using AssemblyScript"
+language = "assemblyscript"
+manifest_version = 1
+name = "assemblyscript"
+service_id = ""
+
+[local_server]
+
+  [local_server.backends]
