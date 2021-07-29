@@ -1,69 +1,94 @@
-//! Default Compute@Edge template program.
+use fastly::http::header;
+use fastly::{Body, Error, Request, Response};
+use std::io::BufRead;
+use std::io::Write;
 
-use fastly::http::{header, Method, StatusCode};
-use fastly::{mime, Error, Request, Response};
+const ACCOUNT_COOKIE_NAME: &str = "govuk_account_session";
+const BACKEND_NAME: &str = "origin";
 
-/// The name of a backend server associated with this service.
-///
-/// This should be changed to match the name of your own backend. See the the `Hosts` section of
-/// the Fastly WASM service UI for more information.
-const BACKEND_NAME: &str = "backend_name";
-
-/// The name of a second backend associated with this service.
-const OTHER_BACKEND_NAME: &str = "other_backend_name";
-
-/// The entry point for your application.
-///
-/// This function is triggered when your service receives a client request. It could be used to
-/// route based on the request properties (such as method or path), send the request to a backend,
-/// make completely new requests, and/or generate synthetic responses.
-///
-/// If `main` returns an error, a 500 error response will be delivered to the client.
 #[fastly::main]
 fn main(mut req: Request) -> Result<Response, Error> {
-    // Make any desired changes to the client request.
-    req.set_header(header::HOST, "example.com");
+    if req.get_method() == "PURGE" {
+        return Ok(req.send(BACKEND_NAME)?);
+    }
 
-    // Filter request methods...
-    match req.get_method() {
-        // Allow GET and HEAD requests.
-        &Method::GET | &Method::HEAD => (),
+    let bereq = req.clone_with_body();
+    let beresp = fetch_beresp(bereq)?;
+    let resp = transform_beresp(&req, beresp);
+    Ok(resp)
+}
 
-        // Accept PURGE requests; it does not matter to which backend they are sent.
-        m if m == "PURGE" => return Ok(req.send(BACKEND_NAME)?),
+fn fetch_beresp(mut bereq: Request) -> Result<Response, Error> {
+    bereq.remove_header(header::ACCEPT_ENCODING);
+    Ok(bereq.send(BACKEND_NAME)?)
+}
 
-        // Deny anything else.
-        _ => {
-            return Ok(Response::from_status(StatusCode::METHOD_NOT_ALLOWED)
-                .with_header(header::ALLOW, "GET, HEAD")
-                .with_body_text_plain("This method is not allowed\n"))
+/// Transforms the body through simple textual replacement
+///
+/// There are three special strings, intended to be used as CSS
+/// classes, and replaced with the appropriate value:
+///
+/// - `compute_at_edge--show-if-mirrored` - a CSS class which is
+///    visible by default, turned into `compute_at_edge--hide` in all
+///    cases.  This is so we can have something which is visible only
+///    when we fall back to the static mirrors
+///
+/// - `compute_at_edge--show-if-cookie` - a CSS class which is hidden
+///    by default, turned into `compute_at_edge--show` if the session
+///    cookie is present, and `compute_at_edge--hide` otherwise.  This
+///    is so we can have something which is visible only when the user
+///    has a session cookie.
+///
+/// - `compute_at_edge--show-if-not-cookie` - a CSS class which is
+///    hidden by default, turned into `compute_at_edge--show` if the
+///    session cookie is not present, and `compute_at_edge--hide`
+///    otherwise.  This is so we can have something which is visible
+///    only when the user has a session cookie.
+///
+/// The classes `compute_at_edge--show` and `compute_at_edge--hide`
+/// control visibility of elements in the way you'd expect.
+fn transform_beresp(req: &Request, mut beresp: Response) -> Response {
+    let mut resp = beresp.clone_with_body();
+
+    if has_mime_type(&resp, "text/html") {
+        let (show_if_cookie, show_if_not_cookie) = if has_session_cookie(&req) {
+            ("compute_at_edge--show", "compute_at_edge--hide")
+        } else {
+            ("compute_at_edge--hide", "compute_at_edge--show")
+        };
+
+        let mut transformed_body = Body::new();
+        for line in resp.take_body().lines() {
+            write!(
+                &mut transformed_body,
+                "{}\n",
+                line.unwrap()
+                    .replace("compute_at_edge--show-if-mirrored", "compute_at_edge--hide")
+                    .replace("compute_at_edge--show-if-cookie", show_if_cookie)
+                    .replace("compute_at_edge--show-if-not-cookie", show_if_not_cookie),
+            )
+            .unwrap();
         }
-    };
 
-    // Pattern match on the path.
-    match req.get_path() {
-        // If request is to the `/` path, send a default response.
-        "/" => Ok(Response::from_status(StatusCode::OK)
-            .with_content_type(mime::TEXT_HTML_UTF_8)
-            .with_body("<iframe src='https://developer.fastly.com/compute-welcome' style='border:0; position: absolute; top: 0; left: 0; width: 100%; height: 100%'></iframe>\n")),
+        resp.with_body(transformed_body)
+    } else {
+        resp
+    }
+}
 
-        // If request is to the `/backend` path, send to a named backend.
-        "/backend" => {
-            // Request handling logic could go here...  E.g., send the request to an origin backend
-            // and then cache the response for one minute.
-            req.set_ttl(60);
-            Ok(req.send(BACKEND_NAME)?)
-        }
+fn has_mime_type(resp: &Response, mimetype: &str) -> bool {
+    match resp.get_content_type() {
+        Some(mime) if mime.essence_str() == mimetype => true,
+        _ => false,
+    }
+}
 
-        // If request is to a path starting with `/other/`...
-        path if path.starts_with("/other/") => {
-            // Send request to a different backend and don't cache response.
-            req.set_pass(true);
-            Ok(req.send(OTHER_BACKEND_NAME)?)
-        }
-
-        // Catch all other requests and return a 404.
-        _ => Ok(Response::from_status(StatusCode::NOT_FOUND)
-            .with_body_text_plain("The page you requested could not be found\n")),
+fn has_session_cookie(req: &Request) -> bool {
+    match req.get_header("cookie") {
+        Some(cookies) => match cookies.to_str() {
+            Ok(cookie_values) => cookie_values.contains(ACCOUNT_COOKIE_NAME),
+            _ => false,
+        },
+        None => false,
     }
 }
