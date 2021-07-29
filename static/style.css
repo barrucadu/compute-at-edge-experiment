@@ -1,0 +1,3 @@
+.compute_at_edge--hide, .compute_at_edge--show-if-cookie, .compute_at_edge--show-if-not-cookie {
+    display: none;
+}
