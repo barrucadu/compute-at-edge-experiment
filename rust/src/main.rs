@@ -1,15 +1,23 @@
+#[macro_use]
+extern crate lazy_static;
+
+mod acl;
+
 use fastly::http::header;
 use fastly::{Body, Error, Request, Response};
 use std::io::BufRead;
 use std::io::Write;
+use std::net::IpAddr;
 
 const ACCOUNT_COOKIE_NAME: &str = "govuk_account_session";
 const BACKEND_NAME: &str = "origin";
 
 #[fastly::main]
 fn main(mut req: Request) -> Result<Response, Error> {
-    if req.get_method() == "PURGE" {
-        return Ok(req.send(BACKEND_NAME)?);
+    if let Some(IpAddr::V4(client_ip)) = req.get_client_ip_addr() {
+        if req.get_method() == "FASTLYPURGE" && !acl::ip_is_on_purge_allowlist(client_ip) {
+            req.set_header("Fastly-Purge-Requires-Auth", "1");
+        }
     }
 
     let bereq = req.clone_with_body();

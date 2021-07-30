@@ -12,3 +12,6 @@ debug = true
 
 [dependencies]
 fastly = "^0.7.3"
+iprange = "^0.6.4"
+ipnet = "^2.3.1"
+lazy_static = "^1.4.0"
