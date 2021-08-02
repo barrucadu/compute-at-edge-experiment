@@ -84,6 +84,9 @@ fn main(mut req: Request) -> Result<Response, Error> {
     let bereq = req.clone_with_body();
     bereq.set_query(&normalise_querystring(&req));
 
+    // https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L246
+    // not sure how to do this - is this `req.set_stale_while_revalidate()` ?
+
     let beresp = fetch_beresp(bereq)?;
     let resp = transform_beresp(&req, beresp);
     Ok(resp)
