@@ -29,3 +29,5 @@ acl:
   - "34.248.229.46/32"  # AWS Integration NAT gateway
   - "34.248.44.175/32"  # AWS Integration NAT gateway
   - "52.51.97.232/32"   # AWS Integration NAT gateway
+  # https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L201
+  allowlist: []

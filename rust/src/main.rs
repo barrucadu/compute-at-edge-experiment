@@ -24,8 +24,11 @@ fn main(mut req: Request) -> Result<Response, Error> {
         if req.get_method() == "PURGE" && !ip_is_on_purge_allowlist(&settings, &client_ip) {
             req.set_header("Fastly-Purge-Requires-Auth", "1");
         }
-    }
 
+        if !ip_is_on_allowlist_or_allowlist_is_empty(&settings, &client_ip) {
+            return Ok(Response::from_status(403));
+        }
+    }
     let bereq = req.clone_with_body();
     let beresp = fetch_beresp(bereq)?;
     let resp = transform_beresp(&req, beresp);
@@ -41,6 +44,21 @@ fn fetch_beresp(mut bereq: Request) -> Result<Response, Error> {
 fn ip_is_on_purge_allowlist(settings: &Config, client_ip: &IpAddr) -> bool {
     if let IpAddr::V4(client_ipv4) = client_ip {
         let acl = acl_from_settings(settings, "acl.fastlypurge").unwrap();
+        acl.contains(client_ipv4)
+    } else {
+        false
+    }
+}
+
+/// Check if an IP is on the general allowlist or if the allowlist is
+/// empty.
+fn ip_is_on_allowlist_or_allowlist_is_empty(settings: &Config, client_ip: &IpAddr) -> bool {
+    let acl = acl_from_settings(settings, "acl.allowlist").unwrap();
+    if acl.is_empty() {
+        return true;
+    }
+
+    if let IpAddr::V4(client_ipv4) = client_ip {
         acl.contains(client_ipv4)
     } else {
         false
