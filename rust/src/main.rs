@@ -38,6 +38,14 @@ fn main(mut req: Request) -> Result<Response, Error> {
         return Ok(Response::from_status(401).with_header("WWW-Authenticate", "Basic"));
     }
 
+    if get_header(&req, "fastly-ssl").is_none() {
+        let url = req.get_url_mut();
+        url.set_scheme("https");
+        return Ok(Response::from_status(301)
+            .with_header("Location", url.to_string())
+            .with_header("Fastly-Backend-Name", "force_ssl"));
+    }
+
     let bereq = req.clone_with_body();
     let beresp = fetch_beresp(bereq)?;
     let resp = transform_beresp(&req, beresp);
