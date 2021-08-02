@@ -52,10 +52,11 @@ fn main(mut req: Request) -> Result<Response, Error> {
         return Ok(response);
     }
 
-    if req.get_url().path() == "/autodiscover/autodiscover.xml" {
-        return Ok(Response::from_status(404)
-                  .with_header("Fastly-Backend-Name", "force_not_found")
-                  .with_body(r#"<!DOCTYPE html>
+    match req.get_url().path() {
+        "/autodiscover/autodiscover.xml" => {
+            return Ok(Response::from_status(404)
+                      .with_header("Fastly-Backend-Name", "force_not_found")
+                      .with_body(r#"<!DOCTYPE html>
 <html>
   <head>
     <title>Welcome to GOV.UK</title>
@@ -72,6 +73,14 @@ fn main(mut req: Request) -> Result<Response, Error> {
   </body>
 </html>
 "#));
+        }
+        "/security.txt" | "/.well-known/security.txt" | "/.well_known/security.txt" => {
+            return Ok(Response::from_status(302).with_header(
+                "Location",
+                "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt",
+            ));
+        }
+        _ => (),
     }
 
     let bereq = req.clone_with_body();
