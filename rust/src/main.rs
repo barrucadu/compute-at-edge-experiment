@@ -5,9 +5,11 @@ use fastly::http::header;
 use fastly::{Body, Error, Request, Response};
 use ipnet::{AddrParseError, Ipv4Net};
 use iprange::IpRange;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::Write;
 use std::net::IpAddr;
+use uuid::Uuid;
 
 const ACCOUNT_COOKIE_NAME: &str = "govuk_account_session";
 const BACKEND_NAME: &str = "origin";
@@ -40,9 +42,12 @@ fn main(mut req: Request) -> Result<Response, Error> {
         ))
         .unwrap();
 
+    let method: String = req.get_method_str().to_string();
+
     if let Some(client_ip) = req.get_client_ip_addr() {
-        if req.get_method() == "PURGE" && !ip_is_on_purge_allowlist(&settings, &client_ip).unwrap()
-        {
+        req.set_header("Fastly-Client-IP", client_ip.to_string());
+
+        if method == "PURGE" && !ip_is_on_purge_allowlist(&settings, &client_ip).unwrap() {
             req.set_header("Fastly-Purge-Requires-Auth", "1");
         }
 
@@ -81,18 +86,49 @@ fn main(mut req: Request) -> Result<Response, Error> {
         return Ok(Response::from_status(302).with_header("Location", destination));
     }
 
-    let bereq = req.clone_with_body();
+    let mut bereq = req.clone_with_body();
     bereq.set_query(&normalise_querystring(&req));
 
     // https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L246
     // not sure how to do this - is this `req.set_stale_while_revalidate()` ?
 
+    let cookies: HashMap<String, String> = get_cookies(&req);
+
+    bereq.remove_header("Client-IP");
+    bereq.set_header("Govuk-Use-Recommended-Related-Links", "true");
+    bereq.set_header(
+        "GOVUK-Request-Id",
+        Uuid::new_v4()
+            .to_hyphenated()
+            .encode_lower(&mut Uuid::encode_buffer())
+            .to_string(),
+    );
+    if let Some(fastly_client_ip) = req.get_header("Fastly-Client-IP") {
+        bereq.set_header("True-Client-IP", fastly_client_ip);
+        bereq.set_header("X-Forwarded-For", fastly_client_ip);
+    }
+    if let Ok(expected) = settings.get_str("basic_authorization") {
+        bereq.set_header("Authorization", format!("Basic {}", expected));
+    }
+    if let Some(session_id) = cookies.get(ACCOUNT_COOKIE_NAME) {
+        bereq.set_header("GOVUK-Account-Session", session_id);
+    }
+
+    // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L354
+
+    if method != "HEAD" && method != "GET" && method != "PURGE" {
+        bereq.set_pass(true);
+    }
+
+    // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L377
+
     let beresp = fetch_beresp(bereq)?;
-    let resp = transform_beresp(&req, beresp);
+    let resp = transform_beresp(&cookies, &req, beresp);
     Ok(resp)
 }
 
 fn fetch_beresp(mut bereq: Request) -> Result<Response, Error> {
+    // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L271
     bereq.remove_header(header::ACCEPT_ENCODING);
     Ok(bereq.send(BACKEND_NAME)?)
 }
@@ -230,11 +266,15 @@ fn normalise_querystring(req: &Request) -> Vec<(String, String)> {
 ///
 /// The classes `compute_at_edge--show` and `compute_at_edge--hide`
 /// control visibility of elements in the way you'd expect.
-fn transform_beresp(req: &Request, mut beresp: Response) -> Response {
+fn transform_beresp(
+    cookies: &HashMap<String, String>,
+    req: &Request,
+    mut beresp: Response,
+) -> Response {
     let mut resp = beresp.clone_with_body();
 
     if has_mime_type(&resp, "text/html") {
-        let (show_if_cookie, show_if_not_cookie) = if has_session_cookie(&req) {
+        let (show_if_cookie, show_if_not_cookie) = if cookies.contains_key(ACCOUNT_COOKIE_NAME) {
             ("compute_at_edge--show", "compute_at_edge--hide")
         } else {
             ("compute_at_edge--hide", "compute_at_edge--show")
@@ -266,12 +306,20 @@ fn has_mime_type(resp: &Response, mimetype: &str) -> bool {
     }
 }
 
-fn has_session_cookie(req: &Request) -> bool {
-    if let Some(cookies) = get_header(req, "cookie") {
-        cookies.contains(ACCOUNT_COOKIE_NAME)
-    } else {
-        false
-    }
+/// Parse cookies into key/value pairs
+fn get_cookies(req: &Request) -> HashMap<String, String> {
+    get_header(req, "cookie")
+        .unwrap_or("")
+        .split(";")
+        .filter_map(|kv| {
+            kv.find("=").map(|index| {
+                let (key, value) = kv.split_at(index);
+                let key = key.trim().to_string();
+                let value = value[1..].to_string();
+                (key, value)
+            })
+        })
+        .collect()
 }
 
 /// Get the value of a header, if it can be represented as text.
