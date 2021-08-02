@@ -52,6 +52,28 @@ fn main(mut req: Request) -> Result<Response, Error> {
         return Ok(response);
     }
 
+    if req.get_url().path() == "/autodiscover/autodiscover.xml" {
+        return Ok(Response::from_status(404)
+                  .with_header("Fastly-Backend-Name", "force_not_found")
+                  .with_body(r#"<!DOCTYPE html>
+<html>
+  <head>
+    <title>Welcome to GOV.UK</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; }
+      header { background: black; }
+      h1 { color: white; font-size: 29px; margin: 0 auto; padding: 10px; max-width: 990px; }
+      p { color: black; margin: 30px auto; max-width: 990px; }
+    </style>
+  </head>
+  <body>
+    <header><h1>GOV.UK</h1></header>
+    <p>We cannot find the page you're looking for. Please try searching on <a href="https://www.gov.uk/">GOV.UK</a>.</p>
+  </body>
+</html>
+"#));
+    }
+
     let bereq = req.clone_with_body();
     let beresp = fetch_beresp(bereq)?;
     let resp = transform_beresp(&req, beresp);
