@@ -1,10 +1,8 @@
-#[macro_use]
-extern crate lazy_static;
-
-mod acl;
-
+use config::{Config, ConfigError, FileFormat};
 use fastly::http::header;
 use fastly::{Body, Error, Request, Response};
+use ipnet::{AddrParseError, Ipv4Net};
+use iprange::IpRange;
 use std::io::BufRead;
 use std::io::Write;
 use std::net::IpAddr;
@@ -14,8 +12,16 @@ const BACKEND_NAME: &str = "origin";
 
 #[fastly::main]
 fn main(mut req: Request) -> Result<Response, Error> {
-    if let Some(IpAddr::V4(client_ip)) = req.get_client_ip_addr() {
-        if req.get_method() == "FASTLYPURGE" && !acl::ip_is_on_purge_allowlist(client_ip) {
+    let mut settings = Config::new();
+    settings
+        .merge(config::File::from_str(
+            include_str!("../config.yaml"),
+            FileFormat::Yaml,
+        ))
+        .unwrap();
+
+    if let Some(client_ip) = req.get_client_ip_addr() {
+        if req.get_method() == "PURGE" && !ip_is_on_purge_allowlist(&settings, &client_ip) {
             req.set_header("Fastly-Purge-Requires-Auth", "1");
         }
     }
@@ -29,6 +35,36 @@ fn main(mut req: Request) -> Result<Response, Error> {
 fn fetch_beresp(mut bereq: Request) -> Result<Response, Error> {
     bereq.remove_header(header::ACCEPT_ENCODING);
     Ok(bereq.send(BACKEND_NAME)?)
+}
+
+/// Check if an IP is on the PURGE allowlist.
+fn ip_is_on_purge_allowlist(settings: &Config, client_ip: &IpAddr) -> bool {
+    if let IpAddr::V4(client_ipv4) = client_ip {
+        let acl = acl_from_settings(settings, "acl.fastlypurge").unwrap();
+        acl.contains(client_ipv4)
+    } else {
+        false
+    }
+}
+
+/// Read an ACL from the configuration.  Aborts on first error.
+fn acl_from_settings(settings: &Config, key: &str) -> Result<IpRange<Ipv4Net>, ConfigError> {
+    let array = settings.get_array(key)?;
+
+    let values = array
+        .into_iter()
+        .map(|s| s.clone().into_str())
+        .collect::<Result<Vec<String>, ConfigError>>()?;
+
+    let networks = values
+        .iter()
+        .map(|s| s.parse())
+        .collect::<Result<Vec<Ipv4Net>, AddrParseError>>();
+
+    match networks {
+        Ok(networks) => Ok(networks.into_iter().collect()),
+        Err(err) => Err(ConfigError::Message(format!("{:?}", err))),
+    }
 }
 
 /// Transforms the body through simple textual replacement
