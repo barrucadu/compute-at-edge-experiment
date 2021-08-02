@@ -28,6 +28,10 @@ fn main(mut req: Request) -> Result<Response, Error> {
         if !ip_is_on_allowlist_or_allowlist_is_empty(&settings, &client_ip) {
             return Ok(Response::from_status(403));
         }
+
+        if ip_is_on_denylist(&settings, &client_ip) {
+            return Ok(Response::from_status(403));
+        }
     }
     let bereq = req.clone_with_body();
     let beresp = fetch_beresp(bereq)?;
@@ -59,6 +63,16 @@ fn ip_is_on_allowlist_or_allowlist_is_empty(settings: &Config, client_ip: &IpAdd
     }
 
     if let IpAddr::V4(client_ipv4) = client_ip {
+        acl.contains(client_ipv4)
+    } else {
+        false
+    }
+}
+
+/// Check if an IP is on the general denylist.
+fn ip_is_on_denylist(settings: &Config, client_ip: &IpAddr) -> bool {
+    if let IpAddr::V4(client_ipv4) = client_ip {
+        let acl = acl_from_settings(settings, "acl.denylist").unwrap();
         acl.contains(client_ipv4)
     } else {
         false
