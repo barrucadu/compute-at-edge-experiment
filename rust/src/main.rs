@@ -12,6 +12,24 @@ use std::net::IpAddr;
 const ACCOUNT_COOKIE_NAME: &str = "govuk_account_session";
 const BACKEND_NAME: &str = "origin";
 
+const SYNTHETIC_NOT_FOUND_RESPONSE: &str = r#"<!DOCTYPE html>
+<html>
+  <head>
+    <title>Welcome to GOV.UK</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; }
+      header { background: black; }
+      h1 { color: white; font-size: 29px; margin: 0 auto; padding: 10px; max-width: 990px; }
+      p { color: black; margin: 30px auto; max-width: 990px; }
+    </style>
+  </head>
+  <body>
+    <header><h1>GOV.UK</h1></header>
+    <p>We cannot find the page you're looking for. Please try searching on <a href="https://www.gov.uk/">GOV.UK</a>.</p>
+  </body>
+</html>
+"#;
+
 #[fastly::main]
 fn main(mut req: Request) -> Result<Response, Error> {
     let mut settings = Config::new();
@@ -52,35 +70,14 @@ fn main(mut req: Request) -> Result<Response, Error> {
         return Ok(response);
     }
 
-    match req.get_url().path() {
-        "/autodiscover/autodiscover.xml" => {
-            return Ok(Response::from_status(404)
-                      .with_header("Fastly-Backend-Name", "force_not_found")
-                      .with_body(r#"<!DOCTYPE html>
-<html>
-  <head>
-    <title>Welcome to GOV.UK</title>
-    <style>
-      body { font-family: Arial, sans-serif; margin: 0; }
-      header { background: black; }
-      h1 { color: white; font-size: 29px; margin: 0 auto; padding: 10px; max-width: 990px; }
-      p { color: black; margin: 30px auto; max-width: 990px; }
-    </style>
-  </head>
-  <body>
-    <header><h1>GOV.UK</h1></header>
-    <p>We cannot find the page you're looking for. Please try searching on <a href="https://www.gov.uk/">GOV.UK</a>.</p>
-  </body>
-</html>
-"#));
-        }
-        "/security.txt" | "/.well-known/security.txt" | "/.well_known/security.txt" => {
-            return Ok(Response::from_status(302).with_header(
-                "Location",
-                "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt",
-            ));
-        }
-        _ => (),
+    if is_special_not_found(&settings, req.get_url().path()).unwrap() {
+        return Ok(Response::from_status(404)
+            .with_header("Fastly-Backend-Name", "force_not_found")
+            .with_body(SYNTHETIC_NOT_FOUND_RESPONSE));
+    }
+
+    if let Some(destination) = is_special_redirect(&settings, req.get_url().path()).unwrap() {
+        return Ok(Response::from_status(302).with_header("Location", destination));
     }
 
     let bereq = req.clone_with_body();
@@ -161,6 +158,27 @@ fn authorized(settings: &Config, request: &Request) -> bool {
     } else {
         true
     }
+}
+
+/// Check if a path is a special-cased 404
+fn is_special_not_found(settings: &Config, path: &str) -> Result<bool, ConfigError> {
+    let array = settings.get_array("special_paths.not_found")?;
+
+    let paths = array
+        .into_iter()
+        .map(|s| s.clone().into_str())
+        .collect::<Result<Vec<String>, ConfigError>>()?;
+
+    Ok(paths.contains(&path.to_string()))
+}
+
+/// Check if a path is a special-cased redirect and return the redirect if so.
+fn is_special_redirect(settings: &Config, path: &str) -> Result<Option<String>, ConfigError> {
+    let redirects = settings.get_table("special_paths.redirect")?;
+
+    Ok(redirects
+        .get(&path.to_string())
+        .and_then(|value| value.clone().into_str().ok()))
 }
 
 /// Transforms the body through simple textual replacement

@@ -36,3 +36,13 @@ acl:
 
 # https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L213
 basic_authorization: "foo"
+
+special_paths:
+  # https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L230
+  not_found:
+    - "/autodiscover/autodiscover.xml"
+  # https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L235
+  redirect:
+    "/security.txt": "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt"
+    "/.well-known/security.txt": "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt"
+    "/.well_known/security.txt": "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt"
