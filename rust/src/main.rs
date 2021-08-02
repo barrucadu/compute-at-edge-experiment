@@ -41,15 +41,16 @@ fn main(mut req: Request) -> Result<Response, Error> {
         .unwrap();
 
     if let Some(client_ip) = req.get_client_ip_addr() {
-        if req.get_method() == "PURGE" && !ip_is_on_purge_allowlist(&settings, &client_ip) {
+        if req.get_method() == "PURGE" && !ip_is_on_purge_allowlist(&settings, &client_ip).unwrap()
+        {
             req.set_header("Fastly-Purge-Requires-Auth", "1");
         }
 
-        if !ip_is_on_allowlist_or_allowlist_is_empty(&settings, &client_ip) {
+        if !ip_is_on_allowlist_or_allowlist_is_empty(&settings, &client_ip).unwrap() {
             return Ok(Response::from_status(403));
         }
 
-        if ip_is_on_denylist(&settings, &client_ip) {
+        if ip_is_on_denylist(&settings, &client_ip).unwrap() {
             return Ok(Response::from_status(403));
         }
     }
@@ -92,38 +93,39 @@ fn fetch_beresp(mut bereq: Request) -> Result<Response, Error> {
 }
 
 /// Check if an IP is on the PURGE allowlist.
-fn ip_is_on_purge_allowlist(settings: &Config, client_ip: &IpAddr) -> bool {
-    if let IpAddr::V4(client_ipv4) = client_ip {
-        let acl = acl_from_settings(settings, "acl.fastlypurge").unwrap();
+fn ip_is_on_purge_allowlist(settings: &Config, client_ip: &IpAddr) -> Result<bool, ConfigError> {
+    let acl = acl_from_settings(settings, "acl.fastlypurge")?;
+    Ok(if let IpAddr::V4(client_ipv4) = client_ip {
         acl.contains(client_ipv4)
     } else {
         false
-    }
+    })
 }
 
 /// Check if an IP is on the general allowlist or if the allowlist is
 /// empty.
-fn ip_is_on_allowlist_or_allowlist_is_empty(settings: &Config, client_ip: &IpAddr) -> bool {
-    let acl = acl_from_settings(settings, "acl.allowlist").unwrap();
-    if acl.is_empty() {
-        return true;
-    }
-
-    if let IpAddr::V4(client_ipv4) = client_ip {
+fn ip_is_on_allowlist_or_allowlist_is_empty(
+    settings: &Config,
+    client_ip: &IpAddr,
+) -> Result<bool, ConfigError> {
+    let acl = acl_from_settings(settings, "acl.allowlist")?;
+    Ok(if acl.is_empty() {
+        true
+    } else if let IpAddr::V4(client_ipv4) = client_ip {
         acl.contains(client_ipv4)
     } else {
         false
-    }
+    })
 }
 
 /// Check if an IP is on the general denylist.
-fn ip_is_on_denylist(settings: &Config, client_ip: &IpAddr) -> bool {
-    if let IpAddr::V4(client_ipv4) = client_ip {
-        let acl = acl_from_settings(settings, "acl.denylist").unwrap();
+fn ip_is_on_denylist(settings: &Config, client_ip: &IpAddr) -> Result<bool, ConfigError> {
+    let acl = acl_from_settings(settings, "acl.denylist")?;
+    Ok(if let IpAddr::V4(client_ipv4) = client_ip {
         acl.contains(client_ipv4)
     } else {
         false
-    }
+    })
 }
 
 /// Read an ACL from the configuration.  Aborts on first error.
