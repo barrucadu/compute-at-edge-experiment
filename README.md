@@ -45,6 +45,9 @@ Then you can visit:
 - `http://127.0.0.1:7676` to see the Compute@Edge response
 - `http://127.0.0.1:8888` to see the non-Compute@Edge response (simulating falling back to the static mirrors)
 
+You can test mirror fallback by launching the Python server at ports
+`8889`, `8890`, or `8891`.
+
 Or use cURL:
 
 ```bash

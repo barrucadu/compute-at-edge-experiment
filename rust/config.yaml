@@ -46,3 +46,11 @@ special_paths:
     "/security.txt": "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt"
     "/.well-known/security.txt": "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt"
     "/.well_known/security.txt": "https://vdp.cabinetoffice.gov.uk/.well-known/security.txt"
+
+mirrors:
+  mirrorS3:
+    prefix: "/mirror1"
+  mirrorS3Replica:
+    prefix: "/mirror2"
+  mirrorGCS:
+    prefix: "/mirror3"

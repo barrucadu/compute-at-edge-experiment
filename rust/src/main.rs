@@ -2,17 +2,30 @@ mod secrets;
 
 use config::{Config, ConfigError, FileFormat};
 use fastly::http::header;
+use fastly::http::request::SendError;
 use fastly::{Body, Error, Request, Response};
+use httpdate::fmt_http_date;
 use ipnet::{AddrParseError, Ipv4Net};
 use iprange::IpRange;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::Write;
 use std::net::IpAddr;
+use std::time::SystemTime;
 use uuid::Uuid;
 
 const ACCOUNT_COOKIE_NAME: &str = "govuk_account_session";
-const BACKEND_NAME: &str = "origin";
+const BACKEND_ORIGIN_NAME: &str = "origin";
+const BACKEND_FALLBACK1_NAME: &str = "mirrorS3";
+const BACKEND_FALLBACK2_NAME: &str = "mirrorS3Replica";
+const BACKEND_FALLBACK3_NAME: &str = "mirrorGCS";
+
+const SUFFIXES: &[&str] = &[
+    "atom", "chm", "css", "csv", "diff", "doc", "docx", "dot", "dxf", "eps", "gif", "gml", "html",
+    "ico", "ics", "jpeg", "jpg", "JPG", "js", "json", "kml", "odp", "ods", "odt", "pdf", "PDF",
+    "png", "ppt", "pptx", "ps", "rdf", "rtf", "sch", "txt", "wsdl", "xls", "xlsm", "xlsx", "xlt",
+    "xml", "xsd", "xslt", "zip",
+];
 
 const SYNTHETIC_NOT_FOUND_RESPONSE: &str = r#"<!DOCTYPE html>
 <html>
@@ -28,6 +41,26 @@ const SYNTHETIC_NOT_FOUND_RESPONSE: &str = r#"<!DOCTYPE html>
   <body>
     <header><h1>GOV.UK</h1></header>
     <p>We cannot find the page you're looking for. Please try searching on <a href="https://www.gov.uk/">GOV.UK</a>.</p>
+  </body>
+</html>
+"#;
+
+const SYNTHETIC_SERVER_ERROR_RESPONSE: &str = r#"
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Welcome to GOV.UK</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; }
+      header { background: black; }
+      h1 { color: white; font-size: 29px; margin: 0 auto; padding: 10px; max-width: 990px; }
+      p { color: black; margin: 30px auto; max-width: 990px; }
+    </style>
+  </head>
+  <body>
+    <header><h1>GOV.UK</h1></header>
+    <p>We're experiencing technical difficulties. Please try again later.</p>
+    <p>You can <a href="/coronavirus">find coronavirus information</a> on GOV.UK.</p>
   </body>
 </html>
 "#;
@@ -122,15 +155,105 @@ fn main(mut req: Request) -> Result<Response, Error> {
 
     // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L377
 
-    let beresp = fetch_beresp(bereq)?;
-    let resp = transform_beresp(&cookies, &req, beresp);
-    Ok(resp)
+    match fetch_beresp(&settings, bereq) {
+        Some(beresp) => Ok(transform_beresp(&cookies, &req, beresp)),
+        None => Ok(Response::from_status(503)
+            .with_header("Fastly-Backend-Name", "error")
+            .with_body(SYNTHETIC_SERVER_ERROR_RESPONSE)),
+    }
 }
 
-fn fetch_beresp(mut bereq: Request) -> Result<Response, Error> {
-    // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L271
+fn fetch_beresp(settings: &Config, mut bereq: Request) -> Option<Response> {
+    // fetch an uncompressed response, so that `transform_beresp` can handle it.
     bereq.remove_header(header::ACCEPT_ENCODING);
-    Ok(bereq.send(BACKEND_NAME)?)
+
+    let original_bereq = bereq.clone_without_body();
+    let body_bytes = bereq.take_body_bytes();
+    bereq.set_body(body_bytes.as_slice());
+
+    let mut fallback_path = bereq
+        .get_path()
+        .split("/")
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if fallback_path == "" || fallback_path == "/" {
+        fallback_path = "/index.html".to_string();
+    }
+
+    match bereq.send(BACKEND_ORIGIN_NAME) {
+        Ok(beresp) if !beresp.get_status().is_server_error() => Some(beresp),
+        _ => {
+            if !SUFFIXES.iter().any(|suff| fallback_path.ends_with(suff)) {
+                fallback_path = format!("{}.html", fallback_path);
+            }
+
+            // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L604
+            match fetch_beresp_fallback(
+                settings,
+                &original_bereq,
+                &fallback_path,
+                body_bytes.clone(),
+                BACKEND_FALLBACK1_NAME,
+            ) {
+                Ok(beresp_fallback) if !beresp_fallback.get_status().is_server_error() => {
+                    Some(beresp_fallback)
+                }
+                _ => match fetch_beresp_fallback(
+                    settings,
+                    &original_bereq,
+                    &fallback_path,
+                    body_bytes.clone(),
+                    BACKEND_FALLBACK2_NAME,
+                ) {
+                    Ok(beresp_fallback) if !beresp_fallback.get_status().is_server_error() => {
+                        Some(beresp_fallback)
+                    }
+                    _ => match fetch_beresp_fallback(
+                        settings,
+                        &original_bereq,
+                        &fallback_path,
+                        body_bytes.clone(),
+                        BACKEND_FALLBACK3_NAME,
+                    ) {
+                        Ok(beresp_fallback) if !beresp_fallback.get_status().is_server_error() => {
+                            Some(beresp_fallback)
+                        }
+                        _ => None,
+                    },
+                },
+            }
+        }
+    }
+}
+
+enum BackendError {
+    Config(ConfigError),
+    Fastly(SendError),
+}
+
+fn fetch_beresp_fallback(
+    settings: &Config,
+    bereq: &Request,
+    path: &str,
+    body_bytes: Vec<u8>,
+    backend_name: &str,
+) -> Result<Response, BackendError> {
+    let prefix = settings
+        .get_str(format!("mirrors.{}.prefix", backend_name).as_str())
+        .map_err(|e| BackendError::Config(e))?;
+
+    // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L330
+
+    bereq
+        .clone_without_body()
+        .with_header("Fastly-Failover", "1")
+        .with_header("Fastly-Backend-Name", backend_name)
+        .with_header("Date", fmt_http_date(SystemTime::now()))
+        .with_body(body_bytes)
+        .with_path(format!("{}{}", prefix, path).as_str())
+        .send(backend_name)
+        .map_err(|e| BackendError::Fastly(e))
 }
 
 /// Check if an IP is on the PURGE allowlist.

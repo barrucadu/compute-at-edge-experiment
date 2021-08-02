@@ -12,3 +12,9 @@ service_id = ""
   [local_server.backends]
     [local_server.backends.origin]
       url = "http://127.0.0.1:8888/"
+    [local_server.backends.mirrorS3]
+      url = "http://127.0.0.1:8889/"
+    [local_server.backends.mirrorS3Replica]
+      url = "http://127.0.0.1:8890/"
+    [local_server.backends.mirrorGCS]
+      url = "http://127.0.0.1:8891/"
