@@ -82,6 +82,8 @@ fn main(mut req: Request) -> Result<Response, Error> {
     }
 
     let bereq = req.clone_with_body();
+    bereq.set_query(&normalise_querystring(&req));
+
     let beresp = fetch_beresp(bereq)?;
     let resp = transform_beresp(&req, beresp);
     Ok(resp)
@@ -181,6 +183,24 @@ fn is_special_redirect(settings: &Config, path: &str) -> Result<Option<String>, 
     Ok(redirects
         .get(&path.to_string())
         .and_then(|value| value.clone().into_str().ok()))
+}
+
+/// Sort the querystring, remove UTM params, and drop some params on
+/// certain pages.
+fn normalise_querystring(req: &Request) -> Vec<(String, String)> {
+    let mut qs: Vec<(String, String)> = req.get_query().unwrap();
+
+    match req.get_url().path() {
+        // https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L266
+        "/" => qs = vec![],
+        // https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L261
+        "/find-coronavirus-local-restrictions" => qs.retain(|param| param.0 == "postcode"),
+        // https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L243
+        _ => qs.retain(|param| !param.0.starts_with("utm_")),
+    }
+
+    qs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    qs
 }
 
 /// Transforms the body through simple textual replacement
