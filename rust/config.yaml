@@ -33,3 +33,6 @@ acl:
   allowlist: []
   # https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L208
   denylist: []
+
+# https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L213
+basic_authorization: "foo"

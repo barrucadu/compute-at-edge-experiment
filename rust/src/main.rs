@@ -33,6 +33,11 @@ fn main(mut req: Request) -> Result<Response, Error> {
             return Ok(Response::from_status(403));
         }
     }
+
+    if !authorized(&settings, &req) {
+        return Ok(Response::from_status(401).with_header("WWW-Authenticate", "Basic"));
+    }
+
     let bereq = req.clone_with_body();
     let beresp = fetch_beresp(bereq)?;
     let resp = transform_beresp(&req, beresp);
@@ -99,6 +104,20 @@ fn acl_from_settings(settings: &Config, key: &str) -> Result<IpRange<Ipv4Net>, C
     }
 }
 
+/// Check if the correct Authorization header has been supplied (if
+/// needed).
+fn authorized(settings: &Config, request: &Request) -> bool {
+    if let Ok(expected) = settings.get_str("basic_authorization") {
+        if let Some(actual) = get_header(request, "authorization") {
+            actual == format!("Basic {}", expected)
+        } else {
+            false
+        }
+    } else {
+        true
+    }
+}
+
 /// Transforms the body through simple textual replacement
 ///
 /// There are three special strings, intended to be used as CSS
@@ -160,11 +179,14 @@ fn has_mime_type(resp: &Response, mimetype: &str) -> bool {
 }
 
 fn has_session_cookie(req: &Request) -> bool {
-    match req.get_header("cookie") {
-        Some(cookies) => match cookies.to_str() {
-            Ok(cookie_values) => cookie_values.contains(ACCOUNT_COOKIE_NAME),
-            _ => false,
-        },
-        None => false,
+    if let Some(cookies) = get_header(req, "cookie") {
+        cookies.contains(ACCOUNT_COOKIE_NAME)
+    } else {
+        false
     }
+}
+
+/// Get the value of a header, if it can be represented as text.
+fn get_header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
+    req.get_header(name).and_then(|value| value.to_str().ok())
 }
