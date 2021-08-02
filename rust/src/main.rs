@@ -1,3 +1,5 @@
+mod secrets;
+
 use config::{Config, ConfigError, FileFormat};
 use fastly::http::header;
 use fastly::{Body, Error, Request, Response};
@@ -44,6 +46,10 @@ fn main(mut req: Request) -> Result<Response, Error> {
         return Ok(Response::from_status(301)
             .with_header("Location", url.to_string())
             .with_header("Fastly-Backend-Name", "force_ssl"));
+    }
+
+    if let Some(response) = secrets::recv(&req) {
+        return Ok(response);
     }
 
     let bereq = req.clone_with_body();
