@@ -173,7 +173,7 @@ If so, you will be assigned to a random variant in every test, as seen
 in the `Set-Cookie` response header:
 
 ```bash
- curl -v -H "Authorization: Basic foo" -H "Fastly-SSL: 1" -H "Cookie: cookies_policy=%22usage%22:true" "http://127.0.0.1:7676/"
+$ curl -v -H "Authorization: Basic foo" -H "Fastly-SSL: 1" -H "Cookie: cookies_policy=%22usage%22:true" "http://127.0.0.1:7676/"
 < HTTP/1.0 200 OK
 < server: SimpleHTTP/0.6 Python/3.8.9
 < date: Tue, 03 Aug 2021 12:43:57 GMT
@@ -183,10 +183,11 @@ in the `Set-Cookie` response header:
 < content-length: 0
 ```
 
-You can also pass a chosen variant in a query parameter:
+You can also pass a chosen variant in a query parameter (but not on
+`/`, as all query parameters for that are dropped):
 
 ```bash
-$ curl -v -H "Authorization: Basic foo" -H "Fastly-SSL: 1" -H "Cookie: cookies_policy=%22usage%22:true" "http://127.0.0.1:7676/?ABTest-Example=A"
+$ curl -v -H "Authorization: Basic foo" -H "Fastly-SSL: 1" -H "Cookie: cookies_policy=%22usage%22:true" "http://127.0.0.1:7676/demo?ABTest-Example=A"
 < HTTP/1.0 200 OK
 < server: SimpleHTTP/0.6 Python/3.8.9
 < date: Tue, 03 Aug 2021 12:44:53 GMT
