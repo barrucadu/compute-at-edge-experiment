@@ -54,3 +54,11 @@ mirrors:
     prefix: "/mirror2"
   mirrorGCS:
     prefix: "/mirror3"
+
+ab_tests:
+  Example:
+    active: true
+    expires: 86400
+    variants:
+      A: 50
+      B: 50

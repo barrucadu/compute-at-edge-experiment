@@ -18,7 +18,11 @@ fn main(mut req: Request) -> Result<Response, Error> {
             Some(bereq) => {
                 let original_bereq = bereq.clone_without_body();
                 match cdn_rules::fetch_beresp(&settings, bereq) {
-                    Some(beresp) => Ok(cdn_rules::transform_beresp(&original_bereq, beresp)),
+                    Some(beresp) => Ok(cdn_rules::transform_beresp(
+                        &settings,
+                        &original_bereq,
+                        beresp,
+                    )),
                     None => Ok(cdn_rules::synthetic_error_response()),
                 }
             }
