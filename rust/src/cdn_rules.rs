@@ -242,7 +242,11 @@ pub fn synthetic_error_response() -> Response {
 
 /// Transform the response body.
 pub fn transform_beresp(settings: &Config, bereq: &Request, beresp: Response) -> Response {
-    transform_ab_tests(settings, bereq, transform_account_css(bereq, beresp))
+    transform_ab_tests(
+        settings,
+        bereq,
+        transform_account_header(transform_account_css(bereq, beresp)),
+    )
 }
 
 /// Transforms the body through simple textual replacement
@@ -297,6 +301,45 @@ fn transform_account_css(bereq: &Request, mut beresp: Response) -> Response {
     } else {
         resp
     }
+}
+
+/// Handle the special account response headers: updating cookies or
+/// caching rules.
+fn transform_account_header(mut beresp: Response) -> Response {
+    let mut resp = beresp.clone_with_body();
+
+    if resp.contains_header("GOVUK-Account-End-Session") {
+        resp.append_header(
+            "Set-Cookie",
+            format!(
+                "{}=; secure; httponly; samesite=lax; path=/; max-age=0",
+                ACCOUNT_COOKIE_NAME
+            ),
+        );
+    } else if let Some(session_id) = resp.get_header_str("GOVUK-Account-Session") {
+        let value = format!(
+            "{}={}; secure; httponly; samesite=lax; path=/",
+            ACCOUNT_COOKIE_NAME, session_id
+        );
+        resp.append_header("Set-Cookie", value);
+    }
+
+    let varies = beresp.get_header_all_str("Vary");
+    let varies_by_account_session = varies.iter().any(|value| *value == "GOVUK-Account-Session");
+    if varies_by_account_session {
+        resp.remove_header("Vary");
+        for vary in varies.into_iter() {
+            if vary == "GOVUK-Account-Session" {
+                continue;
+            }
+            resp.append_header("Vary", vary);
+        }
+    }
+
+    resp.remove_header("GOVUK-Account-Session");
+    resp.remove_header("GOVUK-Account-End-Session");
+
+    resp
 }
 
 /// Handle the A/B test response.
