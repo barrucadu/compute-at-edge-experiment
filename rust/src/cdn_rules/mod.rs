@@ -1,5 +1,6 @@
 mod ab_tests;
 mod accounts;
+mod backends;
 
 use crate::cdn_config::Config;
 
@@ -13,11 +14,6 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::SystemTime;
 use uuid::Uuid;
-
-const BACKEND_ORIGIN_NAME: &str = "origin";
-const BACKEND_FALLBACK1_NAME: &str = "mirrorS3";
-const BACKEND_FALLBACK2_NAME: &str = "mirrorS3Replica";
-const BACKEND_FALLBACK3_NAME: &str = "mirrorGCS";
 
 /// HTML for a synthetic 404 response
 const SYNTHETIC_NOT_FOUND_RESPONSE: &str = r#"<!DOCTYPE html>
@@ -182,9 +178,9 @@ pub fn fetch_beresp(settings: &Config, mut bereq: Request) -> Option<Response> {
         fallback_path = "/index.html".to_string();
     }
 
-    match bereq.send(BACKEND_ORIGIN_NAME) {
+    match bereq.send(backends::ORIGIN) {
         Ok(beresp) if !beresp.get_status().is_server_error() => {
-            Some(beresp.with_header("Fastly-Backend-Name", BACKEND_ORIGIN_NAME))
+            Some(beresp.with_header("Fastly-Backend-Name", backends::ORIGIN))
         }
         _ => {
             if !SUFFIXES.iter().any(|suff| fallback_path.ends_with(suff)) {
@@ -196,7 +192,7 @@ pub fn fetch_beresp(settings: &Config, mut bereq: Request) -> Option<Response> {
                 settings,
                 &original_bereq,
                 &fallback_path,
-                BACKEND_FALLBACK1_NAME,
+                backends::FALLBACK1,
             ) {
                 Ok(beresp_fallback) if !beresp_fallback.get_status().is_server_error() => {
                     Some(beresp_fallback)
@@ -205,7 +201,7 @@ pub fn fetch_beresp(settings: &Config, mut bereq: Request) -> Option<Response> {
                     settings,
                     &original_bereq,
                     &fallback_path,
-                    BACKEND_FALLBACK2_NAME,
+                    backends::FALLBACK2,
                 ) {
                     Ok(beresp_fallback) if !beresp_fallback.get_status().is_server_error() => {
                         Some(beresp_fallback)
@@ -214,7 +210,7 @@ pub fn fetch_beresp(settings: &Config, mut bereq: Request) -> Option<Response> {
                         settings,
                         &original_bereq,
                         &fallback_path,
-                        BACKEND_FALLBACK3_NAME,
+                        backends::FALLBACK3,
                     ) {
                         Ok(beresp_fallback) if !beresp_fallback.get_status().is_server_error() => {
                             Some(beresp_fallback)

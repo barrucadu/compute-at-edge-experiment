@@ -1,3 +1,5 @@
+use crate::cdn_rules::backends;
+
 use fastly::{Body, Request, Response};
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -94,11 +96,25 @@ fn transform_css(bereq: &Request, mut beresp: Response) -> Response {
     let mut resp = beresp.clone_with_body();
 
     if has_mime_type(&resp, "text/html") {
-        let (show_if_cookie, show_if_not_cookie) =
-            if bereq.contains_header(ACCOUNT_SESSION_HEADER_NAME) {
-                ("compute_at_edge--show", "compute_at_edge--hide")
+        let (show_if_mirrored, show_if_cookie, show_if_not_cookie) =
+            if beresp.get_header_str("Fastly-Backend-Name") != Some(backends::ORIGIN) {
+                (
+                    "compute_at_edge--show",
+                    "compute_at_edge--hide",
+                    "compute_at_edge--hide",
+                )
+            } else if bereq.contains_header(ACCOUNT_SESSION_HEADER_NAME) {
+                (
+                    "compute_at_edge--hide",
+                    "compute_at_edge--show",
+                    "compute_at_edge--hide",
+                )
             } else {
-                ("compute_at_edge--hide", "compute_at_edge--show")
+                (
+                    "compute_at_edge--hide",
+                    "compute_at_edge--hide",
+                    "compute_at_edge--show",
+                )
             };
 
         let mut transformed_body = Body::new();
@@ -107,7 +123,7 @@ fn transform_css(bereq: &Request, mut beresp: Response) -> Response {
                 &mut transformed_body,
                 "{}\n",
                 line.unwrap()
-                    .replace("compute_at_edge--show-if-mirrored", "compute_at_edge--hide")
+                    .replace("compute_at_edge--show-if-mirrored", show_if_mirrored)
                     .replace("compute_at_edge--show-if-cookie", show_if_cookie)
                     .replace("compute_at_edge--show-if-not-cookie", show_if_not_cookie),
             )
