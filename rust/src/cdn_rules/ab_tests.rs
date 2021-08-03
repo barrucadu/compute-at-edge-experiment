@@ -7,6 +7,13 @@ use std::collections::HashMap;
 /// User-Agent header of the crawler worker.
 const CRAWLER_WORKER_USER_AGENT: &str = "GOV.UK Crawler Worker";
 
+/// Name of the example A/B test
+const EXAMPLE_AB_TEST_NAME: &str = "Example";
+
+/// Path to always set the example A/B test variant on, even without a
+/// consent cookie
+const EXAMPLE_AB_TEST_PATH: &str = "/help/ab-testing";
+
 /// Assign the user to A/B test variants.
 ///
 /// If the user has a cookie, or a ?ABTest-<Name>=<Variant> query
@@ -80,33 +87,10 @@ pub fn transform_beresp(
         let requested_variant: Option<&str> = bereq.get_header_str(header_name);
         let param_name: String = format!("ABTest-{}", name);
 
-        if name == "Example" && bereq.get_path() == "/help/ab-testing" {
-            if bereq_cookies.contains_key(&param_name) {
-                continue;
-            } else if let Some(variant) = requested_variant {
-                resp.append_header(
-                    "Set-Cookie",
-                    format!(
-                        "{}={}; secure; max-age={}",
-                        param_name, variant, ab_test.expires
-                    ),
-                );
-            }
-        } else if has_consented_to_ab_tests(&bereq_cookies) {
-            if bereq_cookies.contains_key(&param_name) {
-                let qs: Vec<(String, String)> = bereq.get_query().unwrap();
-                let qs_map: HashMap<String, String> = qs.into_iter().collect();
-
-                if let Some(variant) = qs_map.get(&param_name) {
-                    resp.append_header(
-                        "Set-Cookie",
-                        format!(
-                            "{}={}; secure; max-age={}; path=/",
-                            param_name, variant, ab_test.expires
-                        ),
-                    );
-                }
-            } else if let Some(variant) = requested_variant {
+        if has_consented_to_ab_tests(&bereq_cookies)
+            || (name == EXAMPLE_AB_TEST_NAME && bereq.get_path() == EXAMPLE_AB_TEST_PATH)
+        {
+            if let Some(variant) = requested_variant {
                 resp.append_header(
                     "Set-Cookie",
                     format!(
