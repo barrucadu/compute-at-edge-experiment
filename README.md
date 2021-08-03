@@ -1,6 +1,8 @@
 Fastly Compute@Edge demo
 ========================
 
+**This is a partial reimplementation of [GOV.UK's WWW VCL](https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb) in Rust.  It is not complete.**
+
 First-time set up
 -----------------
 
