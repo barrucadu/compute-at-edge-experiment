@@ -1,15 +1,15 @@
+mod ab_tests;
+mod accounts;
+
 use crate::cdn_config::Config;
 
 use fastly::http::header;
 use fastly::http::request::SendError;
-use fastly::{Body, Request, Response};
+use fastly::{Request, Response};
 use httpdate::fmt_http_date;
 use ipnet::Ipv4Net;
 use iprange::IpRange;
-use rand::Rng;
 use std::collections::HashMap;
-use std::io::BufRead;
-use std::io::Write;
 use std::net::IpAddr;
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -18,11 +18,6 @@ const BACKEND_ORIGIN_NAME: &str = "origin";
 const BACKEND_FALLBACK1_NAME: &str = "mirrorS3";
 const BACKEND_FALLBACK2_NAME: &str = "mirrorS3Replica";
 const BACKEND_FALLBACK3_NAME: &str = "mirrorGCS";
-
-const CRAWLER_WORKER_USER_AGENT: &str = "GOV.UK Crawler Worker";
-
-/// Session cookie used by the GOV.UK account
-const ACCOUNT_COOKIE_NAME: &str = "govuk_account_session";
 
 /// HTML for a synthetic 404 response
 const SYNTHETIC_NOT_FOUND_RESPONSE: &str = r#"<!DOCTYPE html>
@@ -152,17 +147,14 @@ pub fn build_bereq(settings: &Config, req: &mut Request) -> Option<Request> {
             bereq.set_header("Authorization", format!("Basic {}", expected));
         }
 
-        if let Some(session_id) = cookies.get(ACCOUNT_COOKIE_NAME) {
-            bereq.set_header("GOVUK-Account-Session", session_id);
-        }
-
         // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L354
 
         if method != "HEAD" && method != "GET" && method != "PURGE" {
             bereq.set_pass(true);
         }
 
-        choose_abtest_variants(&settings, &cookies, &mut bereq);
+        ab_tests::transform_bereq(&settings, &cookies, &mut bereq);
+        accounts::transform_bereq(&cookies, &mut bereq);
 
         Some(bereq)
     } else {
@@ -242,172 +234,11 @@ pub fn synthetic_error_response() -> Response {
 
 /// Transform the response body.
 pub fn transform_beresp(settings: &Config, bereq: &Request, beresp: Response) -> Response {
-    transform_ab_tests(
-        settings,
+    let bereq_cookies = get_cookies(bereq.get_header_str("cookie"));
+    accounts::transform_beresp(
         bereq,
-        transform_account_header(transform_account_css(bereq, beresp)),
+        ab_tests::transform_beresp(settings, bereq, beresp, &bereq_cookies),
     )
-}
-
-/// Transforms the body through simple textual replacement
-///
-/// There are three special strings, intended to be used as CSS
-/// classes, and replaced with the appropriate value:
-///
-/// - `compute_at_edge--show-if-mirrored` - a CSS class which is
-///    visible by default, turned into `compute_at_edge--hide` in all
-///    cases.  This is so we can have something which is visible only
-///    when we fall back to the static mirrors
-///
-/// - `compute_at_edge--show-if-cookie` - a CSS class which is hidden
-///    by default, turned into `compute_at_edge--show` if the session
-///    cookie is present, and `compute_at_edge--hide` otherwise.  This
-///    is so we can have something which is visible only when the user
-///    has a session cookie.
-///
-/// - `compute_at_edge--show-if-not-cookie` - a CSS class which is
-///    hidden by default, turned into `compute_at_edge--show` if the
-///    session cookie is not present, and `compute_at_edge--hide`
-///    otherwise.  This is so we can have something which is visible
-///    only when the user has a session cookie.
-///
-/// The classes `compute_at_edge--show` and `compute_at_edge--hide`
-/// control visibility of elements in the way you'd expect.
-fn transform_account_css(bereq: &Request, mut beresp: Response) -> Response {
-    let mut resp = beresp.clone_with_body();
-
-    if has_mime_type(&resp, "text/html") {
-        let (show_if_cookie, show_if_not_cookie) = if bereq.contains_header("GOVUK-Account-Session")
-        {
-            ("compute_at_edge--show", "compute_at_edge--hide")
-        } else {
-            ("compute_at_edge--hide", "compute_at_edge--show")
-        };
-
-        let mut transformed_body = Body::new();
-        for line in resp.take_body().lines() {
-            write!(
-                &mut transformed_body,
-                "{}\n",
-                line.unwrap()
-                    .replace("compute_at_edge--show-if-mirrored", "compute_at_edge--hide")
-                    .replace("compute_at_edge--show-if-cookie", show_if_cookie)
-                    .replace("compute_at_edge--show-if-not-cookie", show_if_not_cookie),
-            )
-            .unwrap();
-        }
-
-        resp.with_body(transformed_body)
-    } else {
-        resp
-    }
-}
-
-/// Handle the special account response headers: updating cookies or
-/// caching rules.
-fn transform_account_header(mut beresp: Response) -> Response {
-    let mut resp = beresp.clone_with_body();
-
-    if resp.contains_header("GOVUK-Account-End-Session") {
-        resp.append_header(
-            "Set-Cookie",
-            format!(
-                "{}=; secure; httponly; samesite=lax; path=/; max-age=0",
-                ACCOUNT_COOKIE_NAME
-            ),
-        );
-    } else if let Some(session_id) = resp.get_header_str("GOVUK-Account-Session") {
-        let value = format!(
-            "{}={}; secure; httponly; samesite=lax; path=/",
-            ACCOUNT_COOKIE_NAME, session_id
-        );
-        resp.append_header("Set-Cookie", value);
-    }
-
-    let varies = beresp.get_header_all_str("Vary");
-    let varies_by_account_session = varies.iter().any(|value| *value == "GOVUK-Account-Session");
-    if varies_by_account_session {
-        resp.remove_header("Vary");
-        for vary in varies.into_iter() {
-            if vary == "GOVUK-Account-Session" {
-                continue;
-            }
-            resp.append_header("Vary", vary);
-        }
-    }
-
-    resp.remove_header("GOVUK-Account-Session");
-    resp.remove_header("GOVUK-Account-End-Session");
-
-    resp
-}
-
-/// Handle the A/B test response.
-fn transform_ab_tests(settings: &Config, bereq: &Request, mut beresp: Response) -> Response {
-    let mut resp = beresp.clone_with_body();
-
-    let req_cookies = get_cookies(bereq.get_header_str("cookie"));
-
-    for (name, ab_test) in settings.ab_tests.iter() {
-        if !ab_test.active {
-            continue;
-        }
-
-        if bereq.get_header_str("User-Agent") == Some(CRAWLER_WORKER_USER_AGENT) {
-            continue;
-        }
-
-        let header_name: String = format!("GOVUK-ABTest-{}", name);
-        let requested_variant: Option<&str> = bereq.get_header_str(header_name);
-        let param_name: String = format!("ABTest-{}", name);
-
-        if name == "Example" && bereq.get_path() == "/help/ab-testing" {
-            if req_cookies.contains_key(&param_name) {
-                continue;
-            } else if let Some(variant) = requested_variant {
-                resp.append_header(
-                    "Set-Cookie",
-                    format!(
-                        "{}={}; secure; max-age={}",
-                        param_name, variant, ab_test.expires
-                    ),
-                );
-            }
-        } else if has_consented_to_ab_tests(&req_cookies) {
-            if req_cookies.contains_key(&param_name) {
-                let qs: Vec<(String, String)> = bereq.get_query().unwrap();
-                let qs_map: HashMap<String, String> = qs.into_iter().collect();
-
-                if let Some(variant) = qs_map.get(&param_name) {
-                    resp.append_header(
-                        "Set-Cookie",
-                        format!(
-                            "{}={}; secure; max-age={}; path=/",
-                            param_name, variant, ab_test.expires
-                        ),
-                    );
-                }
-            } else if let Some(variant) = requested_variant {
-                resp.append_header(
-                    "Set-Cookie",
-                    format!(
-                        "{}={}; secure; max-age={}; path=/",
-                        param_name, variant, ab_test.expires
-                    ),
-                );
-            }
-        }
-    }
-
-    resp
-}
-
-/// Check if a response has a given MIME type.
-fn has_mime_type(resp: &Response, mimetype: &str) -> bool {
-    match resp.get_content_type() {
-        Some(mime) if mime.essence_str() == mimetype => true,
-        _ => false,
-    }
 }
 
 /// Check if an IP is on an ACL.
@@ -476,67 +307,6 @@ fn get_cookies(header_str: Option<&str>) -> HashMap<String, String> {
             })
         })
         .collect()
-}
-
-/// Assign the user to multivariant test buckets
-fn choose_abtest_variants(
-    settings: &Config,
-    cookies: &HashMap<String, String>,
-    bereq: &mut Request,
-) {
-    if has_consented_to_ab_tests(cookies) {
-        for (name, ab_test) in settings.ab_tests.iter() {
-            if !ab_test.active {
-                continue;
-            }
-
-            let header_name: String = format!("GOVUK-ABTest-{}", name);
-            let param_name: String = format!("ABTest-{}", name);
-
-            if bereq.get_header_str("user-agent") == Some(CRAWLER_WORKER_USER_AGENT) {
-                bereq.set_header(header_name, ab_test.crawler_variant.clone());
-                continue;
-            }
-
-            let qs: Vec<(String, String)> = bereq.get_query().unwrap();
-            let qs_map: HashMap<String, String> = qs.into_iter().collect();
-            if let Some(variant) = qs_map.get(&param_name) {
-                if ab_test.variants.get(variant).is_some() {
-                    bereq.set_header(header_name, variant);
-                    continue;
-                }
-            }
-
-            if let Some(variant) = cookies.get(&param_name) {
-                if ab_test.variants.get(variant).is_some() {
-                    bereq.set_header(header_name, variant);
-                    continue;
-                }
-            }
-
-            let total_freq = ab_test.variants.values().sum();
-            let mut index = rand::thread_rng().gen_range(0..total_freq);
-            for (variant, freq) in ab_test.variants.iter() {
-                if index <= *freq {
-                    bereq.set_header(header_name, variant);
-                    break;
-                } else {
-                    index = index - freq;
-                }
-            }
-        }
-    }
-}
-
-/// Check if the user has consented to A/B tests
-fn has_consented_to_ab_tests(cookies: &HashMap<String, String>) -> bool {
-    if let Some(policy) = cookies.get("cookies_policy") {
-        if policy.contains("%22usage%22:true") {
-            return true;
-        }
-    }
-
-    false
 }
 
 /// Union of different backend error types.
