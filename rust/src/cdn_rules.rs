@@ -1,9 +1,10 @@
-use config::{Config, ConfigError};
+use crate::cdn_config::Config;
+
 use fastly::http::header;
 use fastly::http::request::SendError;
 use fastly::{Body, Request, Response};
 use httpdate::fmt_http_date;
-use ipnet::{AddrParseError, Ipv4Net};
+use ipnet::Ipv4Net;
 use iprange::IpRange;
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -72,11 +73,11 @@ const SUFFIXES: &[&str] = &[
 /// Produce a synthetic response to this request, if appropriate.
 pub fn synthetic_response(settings: &Config, req: &Request) -> Option<Response> {
     if let Some(client_ip) = req.get_client_ip_addr().clone() {
-        if !ip_is_on_acl(settings, "allowlist", &client_ip, true).unwrap() {
+        if !ip_is_on_acl(&settings.acl_allowlist, &client_ip, true) {
             return Some(Response::from_status(403));
         }
 
-        if ip_is_on_acl(settings, "denylist", &client_ip, false).unwrap() {
+        if ip_is_on_acl(&settings.acl_denylist, &client_ip, false) {
             return Some(Response::from_status(403));
         }
     }
@@ -95,7 +96,7 @@ pub fn synthetic_response(settings: &Config, req: &Request) -> Option<Response> 
         );
     }
 
-    if is_special_not_found(&settings, req.get_url().path()).unwrap() {
+    if is_special_not_found(&settings, req.get_url().path()) {
         return Some(
             Response::from_status(404)
                 .with_header("Fastly-Backend-Name", "force_not_found")
@@ -103,7 +104,7 @@ pub fn synthetic_response(settings: &Config, req: &Request) -> Option<Response> 
         );
     }
 
-    if let Some(destination) = is_special_redirect(&settings, req.get_url().path()).unwrap() {
+    if let Some(destination) = is_special_redirect(&settings, req.get_url().path()) {
         return Some(Response::from_status(302).with_header("Location", destination));
     }
 
@@ -125,8 +126,7 @@ pub fn build_bereq(settings: &Config, req: &mut Request) -> Option<Request> {
         bereq.set_header("True-Client-IP", ip.clone());
         bereq.set_header("X-Forwarded-For", ip.clone());
 
-        if method == "PURGE" && !ip_is_on_acl(&settings, "fastlypurge", &client_ip, false).unwrap()
-        {
+        if method == "PURGE" && !ip_is_on_acl(&settings.acl_fastlypurge, &client_ip, false) {
             bereq.set_header("Fastly-Purge-Requires-Auth", "1");
         }
 
@@ -145,7 +145,7 @@ pub fn build_bereq(settings: &Config, req: &mut Request) -> Option<Request> {
                 .to_string(),
         );
 
-        if let Ok(expected) = settings.get_str("basic_authorization") {
+        if let Some(expected) = &settings.basic_authorization {
             bereq.set_header("Authorization", format!("Basic {}", expected));
         }
 
@@ -305,71 +305,36 @@ fn has_mime_type(resp: &Response, mimetype: &str) -> bool {
 }
 
 /// Check if an IP is on an ACL.
-fn ip_is_on_acl(
-    settings: &Config,
-    acl_name: &str,
-    client_ip: &IpAddr,
-    on_empty_acl: bool,
-) -> Result<bool, ConfigError> {
-    let array = settings.get_array(format!("acl.{}", acl_name).as_str())?;
-
-    let values = array
-        .into_iter()
-        .map(|s| s.clone().into_str())
-        .collect::<Result<Vec<String>, ConfigError>>()?;
-
-    let networks = values
-        .iter()
-        .map(|s| s.parse())
-        .collect::<Result<Vec<Ipv4Net>, AddrParseError>>();
-
-    match networks {
-        Ok(networks) => {
-            let acl: IpRange<Ipv4Net> = networks.into_iter().collect();
-            Ok(if acl.is_empty() {
-                on_empty_acl
-            } else if let IpAddr::V4(client_ipv4) = client_ip {
-                acl.contains(client_ipv4)
-            } else {
-                false
-            })
-        }
-        Err(err) => Err(ConfigError::Message(format!("{:?}", err))),
+fn ip_is_on_acl(acl: &IpRange<Ipv4Net>, client_ip: &IpAddr, on_empty_acl: bool) -> bool {
+    if acl.is_empty() {
+        on_empty_acl
+    } else if let IpAddr::V4(client_ipv4) = client_ip {
+        acl.contains(client_ipv4)
+    } else {
+        false
     }
 }
 /// Check if the correct Authorization header has been supplied (if
 /// needed).
 fn authorized(settings: &Config, request: &Request) -> bool {
-    if let Ok(expected) = settings.get_str("basic_authorization") {
-        if let Some(actual) = get_header(request, "authorization") {
-            actual == format!("Basic {}", expected)
-        } else {
-            false
-        }
-    } else {
-        true
+    match (
+        &settings.basic_authorization,
+        get_header(request, "authorization"),
+    ) {
+        (Some(expected), Some(actual)) if actual == format!("Basic {}", expected) => true,
+        (Some(_), _) => false,
+        (None, _) => true,
     }
 }
 
 /// Check if a path is a special-cased 404
-fn is_special_not_found(settings: &Config, path: &str) -> Result<bool, ConfigError> {
-    let array = settings.get_array("special_paths.not_found")?;
-
-    let paths = array
-        .into_iter()
-        .map(|s| s.clone().into_str())
-        .collect::<Result<Vec<String>, ConfigError>>()?;
-
-    Ok(paths.contains(&path.to_string()))
+fn is_special_not_found(settings: &Config, path: &str) -> bool {
+    settings.synthetic_not_found.contains(&path.to_string())
 }
 
 /// Check if a path is a special-cased redirect and return the redirect if so.
-fn is_special_redirect(settings: &Config, path: &str) -> Result<Option<String>, ConfigError> {
-    let redirects = settings.get_table("special_paths.redirect")?;
-
-    Ok(redirects
-        .get(&path.to_string())
-        .and_then(|value| value.clone().into_str().ok()))
+fn is_special_redirect<'a>(settings: &'a Config, path: &'a str) -> Option<&'a String> {
+    settings.synthetic_redirect.get(&path.to_string())
 }
 
 /// Sort the querystring, remove UTM params, and drop some params on
@@ -413,7 +378,7 @@ fn get_header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
 
 /// Union of different backend error types.
 enum BackendError {
-    Config(ConfigError),
+    MissingConfig,
     Fastly(SendError),
 }
 
@@ -424,18 +389,24 @@ fn fetch_beresp_fallback(
     path: &str,
     backend_name: &str,
 ) -> Result<Response, BackendError> {
-    let prefix = settings
-        .get_str(format!("mirrors.{}.prefix", backend_name).as_str())
-        .map_err(|e| BackendError::Config(e))?;
+    if let Some(mirror_config) = settings.mirrors.get(backend_name) {
+        // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L330
 
-    // todo https://github.com/alphagov/govuk-cdn-config/blob/master/vcl_templates/www.vcl.erb#L330
+        let new_path = if let Some(prefix) = &mirror_config.prefix {
+            format!("{}{}", prefix.clone(), path)
+        } else {
+            path.to_string()
+        };
 
-    bereq
-        .clone_without_body()
-        .with_header("Fastly-Failover", "1")
-        .with_header("Fastly-Backend-Name", backend_name)
-        .with_header("Date", fmt_http_date(SystemTime::now()))
-        .with_path(format!("{}{}", prefix, path).as_str())
-        .send(backend_name)
-        .map_err(|e| BackendError::Fastly(e))
+        bereq
+            .clone_without_body()
+            .with_header("Fastly-Failover", "1")
+            .with_header("Fastly-Backend-Name", backend_name)
+            .with_header("Date", fmt_http_date(SystemTime::now()))
+            .with_path(&new_path)
+            .send(backend_name)
+            .map_err(|e| BackendError::Fastly(e))
+    } else {
+        Err(BackendError::MissingConfig)
+    }
 }
