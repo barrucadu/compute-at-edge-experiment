@@ -183,7 +183,9 @@ pub fn fetch_beresp(settings: &Config, mut bereq: Request) -> Option<Response> {
     }
 
     match bereq.send(BACKEND_ORIGIN_NAME) {
-        Ok(beresp) if !beresp.get_status().is_server_error() => Some(beresp),
+        Ok(beresp) if !beresp.get_status().is_server_error() => {
+            Some(beresp.with_header("Fastly-Backend-Name", BACKEND_ORIGIN_NAME))
+        }
         _ => {
             if !SUFFIXES.iter().any(|suff| fallback_path.ends_with(suff)) {
                 fallback_path = format!("{}.html", fallback_path);
@@ -331,14 +333,17 @@ fn fetch_beresp_fallback(
             path.to_string()
         };
 
-        bereq
+        match bereq
             .clone_without_body()
-            .with_header("Fastly-Failover", "1")
-            .with_header("Fastly-Backend-Name", backend_name)
             .with_header("Date", fmt_http_date(SystemTime::now()))
             .with_path(&new_path)
             .send(backend_name)
-            .map_err(|e| BackendError::Fastly(e))
+        {
+            Ok(beresp) => Ok(beresp
+                .with_header("Fastly-Failover", "1")
+                .with_header("Fastly-Backend-Name", backend_name)),
+            Err(e) => Err(BackendError::Fastly(e)),
+        }
     } else {
         Err(BackendError::MissingConfig)
     }
